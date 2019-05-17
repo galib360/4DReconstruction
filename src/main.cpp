@@ -8,6 +8,7 @@
 #include <sstream>
 #include <fstream>
 #include <chrono>
+#include <jsoncpp/json/json.h>
 
 #include<vcg/complex/complex.h>
 #include <vcg/complex/algorithms/update/topology.h>
@@ -37,23 +38,32 @@ using namespace std::chrono;
 class MyFace;
 class MyVertex;
 
-struct MyUsedTypes : public vcg::UsedTypes<	vcg::Use<MyVertex>::AsVertexType, vcg::Use<MyFace>::AsFaceType>{};
-class MyVertex  : public vcg::Vertex< MyUsedTypes, vcg::vertex::VFAdj, vcg::vertex::Coord3f, vcg::vertex::Normal3f, vcg::vertex::BitFlags  >{};
-class MyFace    : public vcg::Face  < MyUsedTypes, vcg::face::VFAdj, vcg::face::Normal3f, vcg::face::VertexRef, vcg::face::BitFlags > {};
-class MyMesh : public vcg::tri::TriMesh<vector<MyVertex>, vector<MyFace> > {};
+struct MyUsedTypes: public vcg::UsedTypes<vcg::Use<MyVertex>::AsVertexType,
+		vcg::Use<MyFace>::AsFaceType> {
+};
+class MyVertex: public vcg::Vertex<MyUsedTypes, vcg::vertex::VFAdj,
+		vcg::vertex::Coord3f, vcg::vertex::Normal3f, vcg::vertex::BitFlags> {
+};
+class MyFace: public vcg::Face<MyUsedTypes, vcg::face::VFAdj,
+		vcg::face::Normal3f, vcg::face::VertexRef, vcg::face::BitFlags> {
+};
+class MyMesh: public vcg::tri::TriMesh<vector<MyVertex>, vector<MyFace> > {
+};
 
 Vec3f voxel_number;
-int N = 10;			//how many cameras/views
-int F = 2;		//number of frames
-int startFrame = 0;
+int N = 3;			//how many cameras/views
+int F = 64;		//number of frames
+int startFrame = 60;
 int dim[3];
-int decPoint = 1/.01;
-int vnormal = 0;	// 1 for per vertex normal calculation, 0 for per triangle
+int decPoint = 1 / .01;
+static int vnormal = 0;	// 1 for per vertex normal calculation, 0 for per triangle
+static int readjson = 1;
+static int quatmethod = 0;//0 for doc, 1 for angle axis
 float isoscaler = 1;
 Vec3f voxel_size;
-int fps = 500;
+int fps = 1000;
 int givenParam = 1; // 1 for given M, 0 for given K and Rt
-string inputdir = "child_rope";
+string inputdir = "Paul2";
 string extension = ".png";
 
 ////for bounding box computation
@@ -218,12 +228,12 @@ vector<Mat> Rt;
 vector<Mat> R;
 vector<Mat> Rvec;
 vector<Mat> t;
+vector<Mat> quats;
 
 vector<Vector3f> cameraOrigins;
 vector<Vector3f> planeNormals;
 vector<Plane> cameraPlanes;
 vector<Point> midpoints;
-
 
 float xmin = 1000;
 float xmax = -1000;
@@ -231,6 +241,67 @@ float ymin = 1000;
 float ymax = -1000;
 float zmin = 1000;
 float zmax = -1000;
+
+void Quat2Rot(Mat& rotm, Mat&quat){
+	float qw = quat.at<float>(0,0);
+	float qx = quat.at<float>(1,0);
+	float qy = quat.at<float>(2,0);
+	float qz = quat.at<float>(3,0);
+	rotm.at<float>(0, 0) = 2 * ((qw * qw) + (qx * qx) - 0.5);
+	rotm.at<float>(0, 1) = 2 * ((qx * qy) - (qw * qz));
+	rotm.at<float>(0, 2) = 2 * ((qw * qy) + (qx * qz));
+	rotm.at<float>(1, 0) = 2 * ((qw * qz) + (qx * qy));
+	rotm.at<float>(1, 1) = 2 * ((qw * qw) + (qy * qy) - 0.5);
+	rotm.at<float>(1, 2) = 2 * ((qy * qz) - (qw * qx));
+	rotm.at<float>(2, 0) = 2 * ((qx * qz) - (qw * qy));
+	rotm.at<float>(2, 1) = 2 * ((qw * qx) + (qy * qz));
+	rotm.at<float>(2, 2) = 2 * ((qw * qw) + (qz * qz) - 0.5);
+}
+
+
+Mat Rot2QuatMirror(Mat& rotm){
+	float tr = rotm.at<float>(0, 0) + rotm.at<float>(1, 1) + rotm.at<float>(2, 2);
+	float qw,qx,qy,qz;
+	Mat quaternion(4,1, CV_32F);
+	if (tr > 0) {
+		float S = sqrt(tr + 1.0) * 2; // S=4*qw
+		qw = 0.25 * S;
+		qx = (rotm.at<float>(2, 1) - rotm.at<float>(1, 2)) / S;
+		qy = (rotm.at<float>(0, 2) - rotm.at<float>(2, 0)) / S;
+		qz = (rotm.at<float>(1, 0) - rotm.at<float>(0, 1)) / S;
+	} else if ((rotm.at<float>(0, 0) > rotm.at<float>(1, 1))
+			& (rotm.at<float>(0, 0) > rotm.at<float>(2, 2))) {
+		float S = sqrt(
+				1.0 + rotm.at<float>(0, 0) - rotm.at<float>(1, 1)
+						- rotm.at<float>(2, 2)) * 2; // S=4*qx
+		qw = (rotm.at<float>(2, 1) - rotm.at<float>(1, 2)) / S;
+		qx = 0.25 * S;
+		qy = (rotm.at<float>(0, 1) + rotm.at<float>(1, 0)) / S;
+		qz = (rotm.at<float>(0, 2) + rotm.at<float>(2, 0)) / S;
+	} else if (rotm.at<float>(1, 1) > rotm.at<float>(2, 2)) {
+		float S = sqrt(
+				1.0 + rotm.at<float>(1, 1) - rotm.at<float>(0, 0)
+						- rotm.at<float>(2, 2)) * 2; // S=4*qy
+		qw = (rotm.at<float>(0, 2) - rotm.at<float>(2, 0)) / S;
+		qx = (rotm.at<float>(0, 1) + rotm.at<float>(1, 0)) / S;
+		qy = 0.25 * S;
+		qz = (rotm.at<float>(1, 2) + rotm.at<float>(2, 1)) / S;
+	} else {
+		float S = sqrt(
+				1.0 + rotm.at<float>(2, 2) - rotm.at<float>(0, 0)
+						- rotm.at<float>(1, 1)) * 2; // S=4*qz
+		qw = (rotm.at<float>(1, 0) - rotm.at<float>(0, 1)) / S;
+		qx = (rotm.at<float>(0, 2) + rotm.at<float>(2, 0)) / S;
+		qy = (rotm.at<float>(1, 2) + rotm.at<float>(2, 1)) / S;
+		qz = 0.25 * S;
+	}
+	quaternion.at<float>(0, 0) = qw;
+	quaternion.at<float>(1, 0) = -qx;
+	quaternion.at<float>(2, 0) = qy;
+	quaternion.at<float>(3, 0) = -qz;
+
+	return quaternion;
+}
 
 int main() {
 
@@ -270,11 +341,10 @@ int main() {
 
 			//for child
 			cv::String path;
-			if (countView<10){
+			if (countView < 10) {
 				//path = "children/cam0" + to_string(countView) + "/*.png";
 				path = inputdir + "/cam0" + to_string(countView) + "/";
-			}
-			else if(countView>=10){
+			} else if (countView >= 10) {
 				//path = "children/cam" + to_string(countView) + "/*.png";
 				path = inputdir + "/cam" + to_string(countView) + "/";
 			}
@@ -297,7 +367,7 @@ int main() {
 
 			//cv::Mat im = cv::imread(fn[countFrame]);
 
-			cv::Mat im = cv::imread(path+fn);
+			cv::Mat im = cv::imread(path + fn);
 //			cout << countFrame << endl;
 //			cout << path+fn << endl;
 
@@ -405,20 +475,24 @@ int main() {
 
 			vector<string> fid;
 
-
 			//for dancer
 //			std::ifstream txtfile(
 //					"data/cam0" + to_string(countView) + "/cam_par.txt");
 
-			//for child
-			std::ifstream txtfile;
-			if (countView < 10) {
-				txtfile = ifstream(inputdir + "/cam0" + to_string(countView)+ "/cam_par.txt");
-			} else if (countView >= 10) {
-				txtfile = ifstream(inputdir + "/cam" + to_string(countView)+ "/cam_par.txt");
-			}
+			if (readjson == 0) {
+				//for child
+				std::ifstream txtfile;
+				if (countView < 10) {
+					txtfile = ifstream(
+							inputdir + "/cam0" + to_string(countView)
+									+ "/cam_par.txt");
+				} else if (countView >= 10) {
+					txtfile = ifstream(
+							inputdir + "/cam" + to_string(countView)
+									+ "/cam_par.txt");
+				}
 
-			//for martial
+				//for martial
 //			std::ifstream txtfile;
 //			if (countView < 10) {
 //				txtfile = ifstream(
@@ -429,44 +503,44 @@ int main() {
 //						"martial/cam" + to_string(countView) + "/cam"+to_string(countView)+".txt");
 //			}
 
-			//cout << "data/cam0" + to_string(countView) + "/cam_par.txt" << endl;
-			//std::ifstream txtfile("templeSR/templeSR_par.txt");
-			std::string line;
-			vector<string> linedata;
-			//std::getline(txtfile, line);
-			//cout<<line<<endl;
-			//std::stringstream linestream(line);
+				//cout << "data/cam0" + to_string(countView) + "/cam_par.txt" << endl;
+				//std::ifstream txtfile("templeSR/templeSR_par.txt");
+				std::string line;
+				vector<string> linedata;
+				//std::getline(txtfile, line);
+				//cout<<line<<endl;
+				//std::stringstream linestream(line);
 
 //			int value;
-			int i = 0;
+				int i = 0;
 
 //			while (linestream >> value) {
 //				N = value;
 //			}
 
-			while (std::getline(txtfile, line)) {
-				std::stringstream linestream(line);
-				string val;
-				while (linestream >> val) {
-					linedata.push_back(val);
-					//cout<<val<<endl;
-				}
-			}
-
-			if (givenParam == 1) {
-				while (i < linedata.size()) {
-					fid.push_back(linedata[i]);
-					i++;
-
-					Mat P(3, 4, cv::DataType<float>::type, Scalar(1));
-					for (int j = 0; j < 3; j++) {
-						for (int k = 0; k < 4; k++) {
-							float temp = strtof((linedata[i]).c_str(), 0);
-
-							P.at<float>(j, k) = temp;
-							i++;
-						}
+				while (std::getline(txtfile, line)) {
+					std::stringstream linestream(line);
+					string val;
+					while (linestream >> val) {
+						linedata.push_back(val);
+						//cout<<val<<endl;
 					}
+				}
+
+				if (givenParam == 1) {
+					while (i < linedata.size()) {
+						fid.push_back(linedata[i]);
+						i++;
+
+						Mat P(3, 4, cv::DataType<float>::type, Scalar(1));
+						for (int j = 0; j < 3; j++) {
+							for (int k = 0; k < 4; k++) {
+								float temp = strtof((linedata[i]).c_str(), 0);
+
+								P.at<float>(j, k) = temp;
+								i++;
+							}
+						}
 //					Mat P(4, 3, cv::DataType<float>::type, Scalar(1));
 //					for (int j = 0; j < 4; j++) {
 //						for (int k = 0; k < 3; k++) {
@@ -478,94 +552,95 @@ int main() {
 //					}
 //					P = P.t();
 
-					M.push_back(P);
+						M.push_back(P);
+						//cout<<"M pushed no. "<<countView<<endl;
 
-					Mat rotm, tvec, kk;
-					decomposeProjectionMatrix(P, kk, rotm, tvec);
-					K.push_back(kk);
-					//		cout << kk << endl << endl;
-					R.push_back(rotm);
-					Mat ttemp(3, 1, cv::DataType<float>::type, Scalar(1));
-					float temp4 = tvec.at<float>(3, 0);
-					ttemp.at<float>(0, 0) = tvec.at<float>(0, 0) / temp4;
-					ttemp.at<float>(1, 0) = tvec.at<float>(1, 0) / temp4;
-					ttemp.at<float>(2, 0) = tvec.at<float>(2, 0) / temp4;
+						Mat rotm, tvec, kk;
+						decomposeProjectionMatrix(P, kk, rotm, tvec);
+						K.push_back(kk);
+						//		cout << kk << endl << endl;
+						R.push_back(rotm);
+						Mat ttemp(3, 1, cv::DataType<float>::type, Scalar(1));
+						float temp4 = tvec.at<float>(3, 0);
+						ttemp.at<float>(0, 0) = tvec.at<float>(0, 0) / temp4;
+						ttemp.at<float>(1, 0) = tvec.at<float>(1, 0) / temp4;
+						ttemp.at<float>(2, 0) = tvec.at<float>(2, 0) / temp4;
 
-					t.push_back(ttemp);
+						t.push_back(ttemp);
 
-					//Mat cameraPosition = -R[i].t() * t[i];
-					Mat Rtrans = rotm.t();
-					Mat cameraPosition = ttemp;
-					//Mat Rtrans = rotm;
+						//Mat cameraPosition = -R[i].t() * t[i];
+						Mat Rtrans = rotm.t();
+						Mat cameraPosition = ttemp;
+						//Mat Rtrans = rotm;
 
-					Vector3f cameraOrigin;
-					cameraOrigin.x = cameraPosition.at<float>(0, 0);
-					cameraOrigin.y = cameraPosition.at<float>(0, 1);
-					cameraOrigin.z = cameraPosition.at<float>(0, 2);
+						Vector3f cameraOrigin;
+						cameraOrigin.x = cameraPosition.at<float>(0, 0);
+						cameraOrigin.y = cameraPosition.at<float>(0, 1);
+						cameraOrigin.z = cameraPosition.at<float>(0, 2);
 
-					Vector3f planeNormal;
-					planeNormal.x = Rtrans.at<float>(0, 2);
-					planeNormal.y = Rtrans.at<float>(1, 2);
-					planeNormal.z = Rtrans.at<float>(2, 2);
+						Vector3f planeNormal;
+						planeNormal.x = Rtrans.at<float>(0, 2);
+						planeNormal.y = Rtrans.at<float>(1, 2);
+						planeNormal.z = Rtrans.at<float>(2, 2);
 
-					Plane cameraPlane = ConstructFromPointNormal(cameraOrigin,
-							planeNormal);
+						Plane cameraPlane = ConstructFromPointNormal(
+								cameraOrigin, planeNormal);
 
-					cameraOrigins.push_back(cameraOrigin);
-					planeNormals.push_back(planeNormal);
-					cameraPlanes.push_back(cameraPlane);
+						cameraOrigins.push_back(cameraOrigin);
+						planeNormals.push_back(planeNormal);
+						cameraPlanes.push_back(cameraPlane);
 
-					//cout<<"camera"<<countView<<": "<<M[countView]<<endl;
+						//cout<<"camera"<<countView<<": "<<M[countView]<<endl;
 
+					}
 				}
-			}
 
-			else if (givenParam == 0) {
-				while (i < linedata.size()) {
-					fid.push_back(linedata[i]);
-					i++;
-					//Put data into K
-					Mat kk(3, 3, cv::DataType<float>::type, Scalar(1));
-					Mat rotm(3, 3, cv::DataType<float>::type, Scalar(1));
-					Mat tvec(3, 1, cv::DataType<float>::type, Scalar(1));
-					for (int j = 0; j < 3; j++) {
-						for (int k = 0; k < 3; k++) {
-							float temp = strtof((linedata[i]).c_str(), 0);
-
-							kk.at<float>(j, k) = temp;
-							i++;
-						}
-					}
-					//kk = kk.t();
-					K.push_back(kk);
-
-					Mat Rttemp(3, 4, cv::DataType<float>::type, Scalar(1));
-					for (int j = 0; j < 3; j++) {
-						for (int k = 0; k < 3; k++) {
-							float temp = strtof((linedata[i]).c_str(), 0);
-
-							Rttemp.at<float>(j, k) = temp;
-							rotm.at<float>(j, k) = temp;
-							i++;
-						}
-					}
-					rotm = rotm.t();
-					R.push_back(rotm);
-					int k = 3;
-					for (int j = 0; j < 3; j++) {
-						float temp = strtof((linedata[i]).c_str(), 0);
-						Rttemp.at<float>(j, k) = temp;
-						tvec.at<float>(j, 0) = temp;
+				else if (givenParam == 0) {
+					while (i < linedata.size()) {
+						fid.push_back(linedata[i]);
 						i++;
+						//Put data into K
+						Mat kk(3, 3, cv::DataType<float>::type, Scalar(1));
+						Mat rotm(3, 3, cv::DataType<float>::type, Scalar(1));
+						Mat tvec(3, 1, cv::DataType<float>::type, Scalar(1));
+						for (int j = 0; j < 3; j++) {
+							for (int k = 0; k < 3; k++) {
+								float temp = strtof((linedata[i]).c_str(), 0);
+
+								kk.at<float>(j, k) = temp;
+								i++;
+							}
+						}
+						//kk = kk.t();
+						K.push_back(kk);
+
+						Mat Rttemp(3, 4, cv::DataType<float>::type, Scalar(1));
+						for (int j = 0; j < 3; j++) {
+							for (int k = 0; k < 3; k++) {
+								float temp = strtof((linedata[i]).c_str(), 0);
+
+								Rttemp.at<float>(j, k) = temp;
+								rotm.at<float>(j, k) = temp;
+								i++;
+							}
+						}
+						rotm = rotm.t();
+						R.push_back(rotm);
+						int k = 3;
+						for (int j = 0; j < 3; j++) {
+							float temp = strtof((linedata[i]).c_str(), 0);
+							Rttemp.at<float>(j, k) = temp;
+							tvec.at<float>(j, 0) = temp;
+							i++;
+						}
+						//Rttemp = Rttemp.t();
+						Rt.push_back(Rttemp);
+						t.push_back(tvec);
+
 					}
-					//Rttemp = Rttemp.t();
-					Rt.push_back(Rttemp);
-					t.push_back(tvec);
 
-				}
-
-				// Compute M's
-				//for (int i = countView; i < countView+1; i++) {
+					// Compute M's
+					//for (int i = countView; i < countView+1; i++) {
 					Mat Mtemp = K[countView] * Rt[countView];
 					M.push_back(Mtemp);
 					Mat Rtrans = R[countView].t();
@@ -588,7 +663,328 @@ int main() {
 					planeNormals.push_back(planeNormal);
 					cameraPlanes.push_back(cameraPlane);
 
-				//}
+					//}
+				}
+			} if (readjson == 1) {
+
+				ifstream jsoninput2(
+						inputdir + "/cam0"+ to_string(countView) + "/"
+								+ "alignold.json");
+				Json::Reader reader2;
+				Json::Value object2;
+				reader2.parse(jsoninput2, object2);
+				Mat RtPW(4, 4, cv::DataType<float>::type, Scalar(0));
+				Mat RPW(3, 3, cv::DataType<float>::type, Scalar(1));
+				Mat TPW(3, 1, cv::DataType<float>::type, Scalar(0));
+
+				RtPW.at<float>(0, 0) = object2["rotation"]["00"].asFloat();
+				RtPW.at<float>(0, 1) = object2["rotation"]["01"].asFloat();
+				RtPW.at<float>(0, 2) = object2["rotation"]["02"].asFloat();
+				RtPW.at<float>(1, 0) = object2["rotation"]["10"].asFloat();
+				RtPW.at<float>(1, 1) = object2["rotation"]["11"].asFloat();
+				RtPW.at<float>(1, 2) = object2["rotation"]["12"].asFloat();
+				RtPW.at<float>(2, 0) = object2["rotation"]["20"].asFloat();
+				RtPW.at<float>(2, 1) = object2["rotation"]["21"].asFloat();
+				RtPW.at<float>(2, 2) = object2["rotation"]["22"].asFloat();
+				RtPW.at<float>(0, 3) = object2["position"]["x"].asFloat();
+				RtPW.at<float>(1, 3) = object2["position"]["y"].asFloat();
+				RtPW.at<float>(2, 3) = object2["position"]["z"].asFloat();
+				RtPW.at<float>(3, 0) = 0;
+				RtPW.at<float>(3, 1) = 0;
+				RtPW.at<float>(3, 2) = 0;
+				RtPW.at<float>(3, 3) = 1;
+
+//				if(countView == 3 || countView== 4){
+//					RtPW = RtPW.inv();
+//				}
+//				RtPW = RtPW.inv();
+//				cout<<"RtPW inverse: "<<RtPW<<endl;
+
+
+//				RPW.at<float>(0, 0) =object2["rotation"]["00"].asFloat();
+//				RPW.at<float>(0, 1) = object2["rotation"]["01"].asFloat();
+//				RPW.at<float>(0, 2) =object2["rotation"]["02"].asFloat();
+//				RPW.at<float>(1, 0) = object2["rotation"]["10"].asFloat();
+//				RPW.at<float>(1, 1) =object2["rotation"]["11"].asFloat();
+//				RPW.at<float>(1, 2) =object2["rotation"]["12"].asFloat();
+//				RPW.at<float>(2, 0) = object2["rotation"]["20"].asFloat();
+//				RPW.at<float>(2, 1) = object2["rotation"]["21"].asFloat();
+//				RPW.at<float>(2, 2) = object2["rotation"]["22"].asFloat();
+//
+//				TPW.at<float>(0, 0) = object2["position"]["x"].asFloat();
+//				TPW.at<float>(1, 0) = object2["position"]["y"].asFloat();
+//				TPW.at<float>(2, 0) = object2["position"]["z"].asFloat();
+
+				RPW.at<float>(0, 0) = RtPW.at<float>(0, 0);
+				RPW.at<float>(0, 1) = RtPW.at<float>(0, 1);
+				RPW.at<float>(0, 2) = RtPW.at<float>(0, 2);
+				RPW.at<float>(1, 0) = RtPW.at<float>(1, 0);
+				RPW.at<float>(1, 1) = RtPW.at<float>(1, 1);
+				RPW.at<float>(1, 2) = RtPW.at<float>(1, 2);
+				RPW.at<float>(2, 0) = RtPW.at<float>(2, 0);
+				RPW.at<float>(2, 1) = RtPW.at<float>(2, 1);
+				RPW.at<float>(2, 2) = RtPW.at<float>(2, 2);
+
+				TPW.at<float>(0, 0) = RtPW.at<float>(0, 3);
+				TPW.at<float>(1, 0) = RtPW.at<float>(1, 3);
+				TPW.at<float>(2, 0) = RtPW.at<float>(2, 3);
+
+//				cout<<"RPW: "<<RPW<<endl;
+//				cout<<"TPW: "<<TPW<<endl;
+
+				ifstream jsoninput(
+						inputdir + "/cam0" +to_string(countView) + "/" + to_string(countFrame)
+								+ ".json");
+				Json::Reader reader;
+				Json::Value object;
+				reader.parse(jsoninput, object);
+
+				Mat kk(3, 3, cv::DataType<float>::type, Scalar(0));
+				Mat rotm(3, 3, cv::DataType<float>::type, Scalar(1));
+				Mat Rttemp(3, 4, cv::DataType<float>::type, Scalar(1));
+				Mat tvec(3, 1, cv::DataType<float>::type, Scalar(1));
+				Mat quat(4, 1, cv::DataType<float>::type, Scalar(1));
+
+				kk.at<float>(0, 0) =
+						object["camera"]["focalLength"]["x"].asFloat();
+				kk.at<float>(0, 1) = 0;
+				kk.at<float>(0, 2) =
+						object["camera"]["principalPoint"]["x"].asFloat();
+				kk.at<float>(1, 0) = 0;
+				kk.at<float>(1, 1) =
+						object["camera"]["focalLength"]["y"].asFloat();
+				kk.at<float>(1, 2) =
+						object["camera"]["principalPoint"]["y"].asFloat();
+				kk.at<float>(2, 0) = 0;
+				kk.at<float>(2, 1) = 0;
+				kk.at<float>(2, 2) = 1;
+
+				//push kk
+				K.push_back(kk);
+
+				float qw = quat.at<float>(0, 0) =
+						object["camera"]["rotation"]["w"].asFloat();
+				float qx = quat.at<float>(0, 1) =
+						object["camera"]["rotation"]["x"].asFloat();
+				float qy = quat.at<float>(0, 2) =
+						object["camera"]["rotation"]["y"].asFloat();
+				float qz = quat.at<float>(0, 3) =
+						object["camera"]["rotation"]["z"].asFloat();
+
+				//				cout<<(qw*qw)+(qx*qx)+(qy*qy)+(qz*qz)<<endl;
+
+//				qx = quat.at<float>(1, 0) *= -1;
+////				qy = quat.at<float>(2, 0) *= -1;
+//				qz = quat.at<float>(3, 0) *= -1;
+
+
+
+				/////////////////////////////
+//				quats.push_back(quat);
+
+
+				if (quatmethod == 1) {
+
+					Mat rvec(3, 1, cv::DataType<float>::type, Scalar(1));
+					float angle = 2 * acos(qw); //radian
+					//					cout<<angle<<endl;
+					//					angle = angle *(180.0/3.141592653589793238463);
+					//					cout<<angle<<endl;
+					//					float x = (qx / sqrt(1 - qw * qw));
+					//					float y = (qy / sqrt(1 - qw * qw));
+					//					float z = (qz / sqrt(1 - qw * qw));
+					//					cout<<x<<", "<<y<<", "<<z<<endl;
+
+					rvec.at<float>(0, 0) = (qx / sqrt(1 - qw * qw)) * angle;
+					rvec.at<float>(1, 0) = (qy / sqrt(1 - qw * qw)) * angle;
+					rvec.at<float>(2, 0) = (qz / sqrt(1 - qw * qw)) * angle;
+
+					//					rvec.at<float>(0, 0) = -(qx / sqrt(1 - qw * qw)) * angle;
+					//					rvec.at<float>(1, 0) = (qy / sqrt(1 - qw * qw)) * angle;
+					//					rvec.at<float>(2, 0) = -(qz / sqrt(1 - qw * qw)) * angle;
+
+					Rodrigues(rvec, rotm);
+					//					euler2rot(rvec,rotm);
+				}
+
+				if (quatmethod == 0) {
+					rotm.at<float>(0, 0) = 2 * ((qw * qw) + (qx * qx) - 0.5);
+					rotm.at<float>(0, 1) = 2 * ((qx * qy) - (qw * qz));
+					rotm.at<float>(0, 2) = 2 * ((qw * qy) + (qx * qz));
+					rotm.at<float>(1, 0) = 2 * ((qw * qz) + (qx * qy));
+					rotm.at<float>(1, 1) = 2 * ((qw * qw) + (qy * qy) - 0.5);
+					rotm.at<float>(1, 2) = 2 * ((qy * qz) - (qw * qx));
+					rotm.at<float>(2, 0) = 2 * ((qx * qz) - (qw * qy));
+					rotm.at<float>(2, 1) = 2 * ((qw * qx) + (qy * qz));
+					rotm.at<float>(2, 2) = 2 * ((qw * qw) + (qz * qz) - 0.5);
+					//					rotm = rotm.t();
+				}
+				//				rotm = RsNE[cam] * rotm;
+				//////////////////////////////////////////////////////////
+//				rotm = RPW * rotm;
+//
+//				float tr = rotm.at<float>(0, 0) + rotm.at<float>(1, 1) + rotm.at<float>(2, 2);
+//				if (tr > 0) {
+//				  float S = sqrt(tr+1.0) * 2; // S=4*qw
+//				  qw = 0.25 * S;
+//				  qx = (rotm.at<float>(2, 1) - rotm.at<float>(1, 2)) / S;
+//				  qy = (rotm.at<float>(0, 2) - rotm.at<float>(2, 0)) / S;
+//				  qz = (rotm.at<float>(1, 0) - rotm.at<float>(0, 1)) / S;
+//				} else if ((rotm.at<float>(0, 0) > rotm.at<float>(1, 1))&(rotm.at<float>(0, 0) > rotm.at<float>(2, 2))) {
+//				  float S = sqrt(1.0 + rotm.at<float>(0, 0) - rotm.at<float>(1, 1) - rotm.at<float>(2, 2)) * 2; // S=4*qx
+//				  qw = (rotm.at<float>(2, 1) - rotm.at<float>(1, 2)) / S;
+//				  qx = 0.25 * S;
+//				  qy = (rotm.at<float>(0, 1) + rotm.at<float>(1, 0)) / S;
+//				  qz = (rotm.at<float>(0, 2) + rotm.at<float>(2, 0)) / S;
+//				} else if (rotm.at<float>(1, 1) > rotm.at<float>(2, 2)) {
+//				  float S = sqrt(1.0 + rotm.at<float>(1, 1) - rotm.at<float>(0, 0) - rotm.at<float>(2, 2)) * 2; // S=4*qy
+//				  qw = (rotm.at<float>(0, 2) - rotm.at<float>(2, 0)) / S;
+//				  qx = (rotm.at<float>(0, 1) + rotm.at<float>(1, 0)) / S;
+//				  qy = 0.25 * S;
+//				  qz = (rotm.at<float>(1, 2) + rotm.at<float>(2, 1)) / S;
+//				} else {
+//				  float S = sqrt(1.0 + rotm.at<float>(2, 2) - rotm.at<float>(0, 0) - rotm.at<float>(1, 1)) * 2; // S=4*qz
+//				  qw = (rotm.at<float>(1, 0) - rotm.at<float>(0, 1)) / S;
+//				  qx = (rotm.at<float>(0, 2) + rotm.at<float>(2, 0)) / S;
+//				  qy = (rotm.at<float>(1, 2) + rotm.at<float>(2, 1)) / S;
+//				  qz = 0.25 * S;
+//				}
+////
+////
+//				qx *= -1;
+//				qz *= -1;
+////				qw = quat.at<float>(0, 0) *= 1;
+////				qy = quat.at<float>(2, 0) *= 1;
+//
+//				quats.push_back(quat);
+//
+//				rotm.at<float>(0, 0) = 2 * ((qw * qw) + (qx * qx) - 0.5);
+//				rotm.at<float>(0, 1) = 2 * ((qx * qy) - (qw * qz));
+//				rotm.at<float>(0, 2) = 2 * ((qw * qy) + (qx * qz));
+//				rotm.at<float>(1, 0) = 2 * ((qw * qz) + (qx * qy));
+//				rotm.at<float>(1, 1) = 2 * ((qw * qw) + (qy * qy) - 0.5);
+//				rotm.at<float>(1, 2) = 2 * ((qy * qz) - (qw * qx));
+//				rotm.at<float>(2, 0) = 2 * ((qx * qz) - (qw * qy));
+//				rotm.at<float>(2, 1) = 2 * ((qw * qx) + (qy * qz));
+//				rotm.at<float>(2, 2) = 2 * ((qw * qw) + (qz * qz) - 0.5);
+
+				///////////////////////////////////////////////////////////
+
+//				Mat quat4rotm = Rot2QuatMirror(RPW);
+//				Quat2Rot(RPW, quat4rotm);
+
+				if(countView == 3 || countView==4){
+					rotm = RPW * rotm;
+				}
+
+				rotm = rotm.t();
+
+
+
+				tvec.at<float>(0, 0) =
+						object["camera"]["position"]["x"].asFloat();
+				tvec.at<float>(1, 0) =
+						object["camera"]["position"]["y"].asFloat();
+				tvec.at<float>(2, 0) =
+						object["camera"]["position"]["z"].asFloat();
+
+//				tvec.at<float>(1, 0) *= -1;
+
+//				cout<<"tvec before: "<<tvec<<endl;
+
+				if (countView == 3 || countView == 4) {
+					tvec = RPW * tvec;
+					tvec = tvec + TPW;
+				}
+				tvec = -rotm * tvec;
+
+//				rotm = RPW * rotm;
+
+				cameraPos.push_back(tvec);
+
+//				tvec = RPW * tvec;
+//				tvec = tvec + TPW;
+
+//				cout<<"tvec after: "<<tvec<<endl;
+
+//				tvec.at<float>(1, 0) *= -1;
+//				rotm = RPW * rotm;
+
+
+//				tvec = RPW * tvec;
+//				tvec = tvec + TPW;
+
+//				rotm = RPW * rotm;
+
+
+				R.push_back(rotm);
+
+
+
+				//push tvec to Cs
+//				cameraPos.push_back(tvec);
+
+				//				tvec = RsNE[cam] * tvec;
+				//				tvec = tvec + tsNE[cam];
+//				tvec = RPW * tvec;
+
+
+//				tvec.at<float>(1, 0) *= -1;
+
+
+
+
+
+//				cameraPos.push_back(tvec);
+
+				//push tvec to ts
+				t.push_back(tvec);
+
+				Rttemp.at<float>(0, 0) = rotm.at<float>(0, 0);
+				Rttemp.at<float>(0, 1) = rotm.at<float>(0, 1);
+				Rttemp.at<float>(0, 2) = rotm.at<float>(0, 2);
+				Rttemp.at<float>(1, 0) = rotm.at<float>(1, 0);
+				Rttemp.at<float>(1, 1) = rotm.at<float>(1, 1);
+				Rttemp.at<float>(1, 2) = rotm.at<float>(1, 2);
+				Rttemp.at<float>(2, 0) = rotm.at<float>(2, 0);
+				Rttemp.at<float>(2, 1) = rotm.at<float>(2, 1);
+				Rttemp.at<float>(2, 2) = rotm.at<float>(2, 2);
+				Rttemp.at<float>(0, 3) = tvec.at<float>(0, 0);
+				Rttemp.at<float>(1, 3) = tvec.at<float>(1, 0);
+				Rttemp.at<float>(2, 3) = tvec.at<float>(2, 0);
+
+				Rt.push_back(Rttemp);
+
+				Mat Mtemp = kk * Rttemp;
+				M.push_back(Mtemp);
+
+//				cout<<"K Matrix: "<< kk<<endl;
+//				cout<<"Rt Matrix: "<< Rttemp<<endl;
+//				cout<<"Projection Matrix: "<< Mtemp<<endl;
+
+				Mat Rtrans = R[countView].t();
+				Mat cameraPosition = t[countView];
+
+				Vector3f cameraOrigin;
+				cameraOrigin.x = cameraPosition.at<float>(0, 0);
+				cameraOrigin.y = cameraPosition.at<float>(0, 1);
+				cameraOrigin.z = cameraPosition.at<float>(0, 2);
+
+				cout<<"cam0"<<to_string(countView)<<" camera origin: "<<cameraOrigin.x<<" "<<cameraOrigin.y<<" "<<cameraOrigin.z<<endl;
+
+				Vector3f planeNormal;
+				planeNormal.x = Rtrans.at<float>(0, 2);
+				planeNormal.y = Rtrans.at<float>(1, 2);
+				planeNormal.z = Rtrans.at<float>(2, 2);
+
+				Plane cameraPlane = ConstructFromPointNormal(cameraOrigin,
+						planeNormal);
+
+				cameraOrigins.push_back(cameraOrigin);
+				planeNormals.push_back(planeNormal);
+				cameraPlanes.push_back(cameraPlane);
+
+
 			}
 		}
 
@@ -614,75 +1010,151 @@ int main() {
 			zmax = -1000;
 		}
 
-		for (int a = 0; a < N - 1; a++) {
-
-			///check the angle here before calculation
-			float dot = Dot(planeNormals[a], planeNormals[a + 1]);
-			float lensq1 = (planeNormals[a].x * planeNormals[a].x)
-					+ (planeNormals[a].y * planeNormals[a].y)
-					+ (planeNormals[a].z * planeNormals[a].z);
-			float lensq2 = (planeNormals[a + 1].x * planeNormals[a + 1].x)
-					+ (planeNormals[a + 1].y * planeNormals[a + 1].y)
-					+ (planeNormals[a + 1].z * planeNormals[a + 1].z);
-			float angle = acos(dot / sqrt(lensq1 * lensq2));
-			float angleD = angle * 180.0 / PI;
-
+//		for (int a = 0; a < N - 1; a++) {
+//
+//			///check the angle here before calculation
+//			float dot = Dot(planeNormals[a], planeNormals[a + 1]);
+//			float lensq1 = (planeNormals[a].x * planeNormals[a].x)
+//					+ (planeNormals[a].y * planeNormals[a].y)
+//					+ (planeNormals[a].z * planeNormals[a].z);
+//			float lensq2 = (planeNormals[a + 1].x * planeNormals[a + 1].x)
+//					+ (planeNormals[a + 1].y * planeNormals[a + 1].y)
+//					+ (planeNormals[a + 1].z * planeNormals[a + 1].z);
+//			float angle = acos(dot / sqrt(lensq1 * lensq2));
+//			float angleD = angle * 180.0 / PI;
+//
 //			cout << "Angle in radian : " << angle << ", in Degree : " << angleD
 //					<< endl;
+//
+//			if (angleD < 45) {
+//				Mat temp(4, pnts[0].pnts2d.size(), CV_32F);
+//				//triangulatePoints(M[0], M[a+1], pnts[0].pnts2d, pnts[a+1].pnts2d, temp);
+//				triangulatePoints(M[a], M[a + 1], pnts[a].pnts2d,
+//						pnts[a + 1].pnts2d, temp);
+//				//temp = temp.t();
+//				for (int k = 0; k < temp.cols; k++) {
+//					for (int k = 0; k < temp.cols; k++) {
+//						for (int j = 0; j < 4; j++) {
+//							temp.at<float>(j, k) = temp.at<float>(j, k)
+//									/ temp.at<float>(3, k);
+//							if (j == 0) {
+//								if (temp.at<float>(j, k) < xmin) {
+//									xmin = temp.at<float>(j, k);
+//									xmin = ceilf(xmin * decPoint) / decPoint;
+//								}
+//								if (temp.at<float>(j, k) > xmax) {
+//									xmax = temp.at<float>(j, k);
+//									xmax = ceilf(xmax * decPoint) / decPoint;
+//								}
+//							} else if (j == 1) {
+//								if (temp.at<float>(j, k) < ymin) {
+//									ymin = temp.at<float>(j, k);
+//									ymin = ceilf(ymin * decPoint) / decPoint;
+//								}
+//								if (temp.at<float>(j, k) > ymax) {
+//									ymax = temp.at<float>(j, k);
+//									ymax = ceilf(ymax * decPoint) / decPoint;
+//								}
+//							} else if (j == 2) {
+//								if (temp.at<float>(j, k) < zmin) {
+//									zmin = temp.at<float>(j, k);
+//									zmin = ceilf(zmin * decPoint) / decPoint;
+//								}
+//								if (temp.at<float>(j, k) > zmax) {
+//									zmax = temp.at<float>(j, k);
+//									zmax = ceilf(zmax * decPoint) / decPoint;
+//								}
+//							}
+//						}
+//					}
+//				}
+//				points3D.push_back(temp);
+//				//cout << temp << endl;
+//			}
+//		}
 
-			if (angleD < 45) {
-				Mat temp(4, pnts[0].pnts2d.size(), CV_32F);
-				//triangulatePoints(M[0], M[a+1], pnts[0].pnts2d, pnts[a+1].pnts2d, temp);
-				triangulatePoints(M[a], M[a + 1], pnts[a].pnts2d,
-						pnts[a + 1].pnts2d, temp);
-				//temp = temp.t();
-				for (int k = 0; k < temp.cols; k++) {
-					for (int k = 0; k < temp.cols; k++) {
-						for (int j = 0; j < 4; j++) {
-							temp.at<float>(j, k) = temp.at<float>(j, k)
-									/ temp.at<float>(3, k);
-							if (j == 0) {
-								if (temp.at<float>(j, k) < xmin) {
-									xmin = temp.at<float>(j, k);
-									xmin = ceilf(xmin * decPoint) / decPoint;
-								}
-								if (temp.at<float>(j, k) > xmax) {
-									xmax = temp.at<float>(j, k);
-									xmax = ceilf(xmax * decPoint) / decPoint;
-								}
-							} else if (j == 1) {
-								if (temp.at<float>(j, k) < ymin) {
-									ymin = temp.at<float>(j, k);
-									ymin = ceilf(ymin * decPoint) / decPoint;
-								}
-								if (temp.at<float>(j, k) > ymax) {
-									ymax = temp.at<float>(j, k);
-									ymax = ceilf(ymax * decPoint) / decPoint;
-								}
-							} else if (j == 2) {
-								if (temp.at<float>(j, k) < zmin) {
-									zmin = temp.at<float>(j, k);
-									zmin = ceilf(zmin * decPoint) / decPoint;
-								}
-								if (temp.at<float>(j, k) > zmax) {
-									zmax = temp.at<float>(j, k);
-									zmax = ceilf(zmax * decPoint) / decPoint;
+
+		for (int a = 0; a < N; a++) {
+
+			for (int b = 0; b < N; b++) {
+
+				if (b != a) {
+					float dot = Dot(planeNormals[a], planeNormals[b]);
+					float lensq1 = (planeNormals[a].x * planeNormals[a].x)
+							+ (planeNormals[a].y * planeNormals[a].y)
+							+ (planeNormals[a].z * planeNormals[a].z);
+					float lensq2 = (planeNormals[b].x
+							* planeNormals[b].x)
+							+ (planeNormals[b].y * planeNormals[b].y)
+							+ (planeNormals[b].z * planeNormals[b].z);
+					float angle = acos(dot / sqrt(lensq1 * lensq2));
+					float angleD = angle * 180.0 / PI;
+
+					cout << "Angle in radian : " << angle << ", in Degree : "
+							<< angleD << endl;
+
+					if (angleD < 45) {
+						Mat temp(4, pnts[0].pnts2d.size(), CV_32F);
+						//triangulatePoints(M[0], M[a+1], pnts[0].pnts2d, pnts[a+1].pnts2d, temp);
+						triangulatePoints(M[a], M[b], pnts[a].pnts2d,
+								pnts[b].pnts2d, temp);
+						//temp = temp.t();
+						for (int k = 0; k < temp.cols; k++) {
+							for (int k = 0; k < temp.cols; k++) {
+								for (int j = 0; j < 4; j++) {
+									temp.at<float>(j, k) = temp.at<float>(j, k)
+											/ temp.at<float>(3, k);
+									if (j == 0) {
+										if (temp.at<float>(j, k) < xmin) {
+											xmin = temp.at<float>(j, k);
+											xmin = ceilf(xmin * decPoint)
+													/ decPoint;
+										}
+										if (temp.at<float>(j, k) > xmax) {
+											xmax = temp.at<float>(j, k);
+											xmax = ceilf(xmax * decPoint)
+													/ decPoint;
+										}
+									} else if (j == 1) {
+										if (temp.at<float>(j, k) < ymin) {
+											ymin = temp.at<float>(j, k);
+											ymin = ceilf(ymin * decPoint)
+													/ decPoint;
+										}
+										if (temp.at<float>(j, k) > ymax) {
+											ymax = temp.at<float>(j, k);
+											ymax = ceilf(ymax * decPoint)
+													/ decPoint;
+										}
+									} else if (j == 2) {
+										if (temp.at<float>(j, k) < zmin) {
+											zmin = temp.at<float>(j, k);
+											zmin = ceilf(zmin * decPoint)
+													/ decPoint;
+										}
+										if (temp.at<float>(j, k) > zmax) {
+											zmax = temp.at<float>(j, k);
+											zmax = ceilf(zmax * decPoint)
+													/ decPoint;
+										}
+									}
 								}
 							}
 						}
+						points3D.push_back(temp);
+						//cout << temp << endl;
 					}
 				}
-				points3D.push_back(temp);
-				//cout << temp << endl;
 			}
+
 		}
 
-		Vec2f xlim(xmin, xmax);
-		Vec2f ylim(ymin, ymax);
-		Vec2f zlim(zmin, zmax);
-//		Vec2f xlim(-0.31, 1.05);
-//		Vec2f ylim(-1.69, -1.13);
-//		Vec2f zlim(-0.29, 2.05);
+//		Vec2f xlim(xmin, xmax);
+//		Vec2f ylim(ymin, ymax);
+//		Vec2f zlim(zmin, zmax);
+		Vec2f xlim(1.1, 2.8);
+		Vec2f ylim(0.05, 1.9);
+		Vec2f zlim(-0.4, 0.8);
 
 		cout << "min is: [ " << xmin << ", " << ymin << ", " << zmin << " ]"
 				<< endl;
@@ -692,7 +1164,7 @@ int main() {
 		//Set resolution after BB calculation
 		//Vec3f voxel_size(0.01, 0.01, 0.01);	//resolution
 
-		if(countFrame == startFrame){
+		if (countFrame == startFrame) {
 			float resolutionx = round(((xlim[1] - xlim[0]) / 100) * 1000)
 					/ 1000;
 			float resolutiony = round(((ylim[1] - ylim[0]) / 100) * 1000)
@@ -707,6 +1179,7 @@ int main() {
 			cout << "calculated resolution: " << resolutionx << ", "
 					<< resolutiony << ", " << resolutionz << endl;
 			cout << "resolution final: " << resolution << endl;
+			resolution = 0.01;
 
 			voxel_size = Vec3f(resolution, resolution, resolution);
 			decPoint = 1 / resolution;
@@ -800,7 +1273,6 @@ int main() {
 //					}
 //				}
 
-
 		float sx = xlim[0];
 		float ex = xlim[1];
 		float sy = ylim[0];
@@ -838,7 +1310,7 @@ int main() {
 				fprintf(stderr, "   Slice %d of %d\n", i, dim[0]);
 			y = sy;
 			for (j = 0; j < dim[1] - 1; j++) {
-				z =ez;
+				z = ez;
 				for (k = 0; k < dim[2] - 1; k++) {
 
 //					grid.p[0].x = i;
@@ -1082,19 +1554,27 @@ int main() {
 //		printf("Output wrote in .off format!\n");
 
 		////For .obj file
-		if (ntri < 100000) {
+		if (ntri < 1000000) {
 			string outputfilename = "output/output" + to_string(countFrame)
 					+ ".obj";
+
+			string outputfilenamePLY = "output/PLY/output"
+					+ to_string(countFrame) + ".ply";
+
 			WriteObjFile(mesh, outputfilename);
 			cout << "NumVerts: " << ntri * 3 << " NumTri: " << ntri << endl;
 			printf("Output wrote in .obj file!\n");
 
 			MyMesh m;
 			int strlen = outputfilename.length();
-			char char_array[strlen+1];
+			char char_array[strlen + 1];
 			strcpy(char_array, outputfilename.c_str());
 
-			int err = vcg::tri::io::Importer<MyMesh>::Open(m,char_array);
+			int strlenPLY = outputfilenamePLY.length();
+			char char_arrayPLY[strlenPLY + 1];
+			strcpy(char_arrayPLY, outputfilenamePLY.c_str());
+
+			int err = vcg::tri::io::Importer<MyMesh>::Open(m, char_array);
 			int dup = vcg::tri::Clean<MyMesh>::RemoveDuplicateVertex(m);
 			//int dupf = vcg::tri::Clean<MyMesh>::RemoveDuplicateFace(m);
 			int unref = vcg::tri::Clean<MyMesh>::RemoveUnreferencedVertex(m);
@@ -1103,18 +1583,24 @@ int main() {
 			//vcg::tri::Smooth::VertexCoordLaplacian(m,3);
 			//vcg::tri::io::ExporterPLY<MyMesh>::Save(m,"out.ply");
 
-
 			//vcg::tri::UpdateNormal<MyMesh>::PerFaceNormalized(m);
 			//vcg::tri::Smooth<MyMesh>::VertexCoordPasoDoble(m,2,0,10.05);
-			vcg::tri::Smooth<MyMesh>::VertexCoordLaplacian(m,2,false,0);
+			vcg::tri::Smooth<MyMesh>::VertexCoordLaplacian(m, 2, false, 0);
 
-			vcg::tri::io::ExporterOBJ<MyMesh>::Save(m,char_array,10);
+			//export as obj
+			vcg::tri::io::ExporterOBJ<MyMesh>::Save(m, char_array, 10);
+
+			//export as PLY
+			vcg::tri::io::ExporterPLY<MyMesh>::Save(m, char_arrayPLY, 10);
+
 			int numberoftri = m.fn;
 			int numberofvertex = m.vn;
-			cout<<"Vertex count: "<<numberofvertex<<"; Triangle count: "<<numberoftri<<endl;
+			cout << "Vertex count: " << numberofvertex << "; Triangle count: "
+					<< numberoftri << endl;
+
+			//----------texture map function call here-------->
 
 		}
-
 
 		//Release & delete
 
@@ -1166,10 +1652,10 @@ int main() {
 
 	high_resolution_clock::time_point t2 = high_resolution_clock::now();
 
-	auto durationms = duration_cast<milliseconds>( t2 - t1 ).count();
-	auto durations = duration_cast<seconds>( t2 - t1 ).count();
-	cout <<"Total code execution time: " <<durationms<<" ms"<<endl;
-	cout <<"Total code execution time: " <<durations<<" sec"<<endl;
+	auto durationms = duration_cast<milliseconds>(t2 - t1).count();
+	auto durations = duration_cast<seconds>(t2 - t1).count();
+	cout << "Total code execution time: " << durationms << " ms" << endl;
+	cout << "Total code execution time: " << durations << " sec" << endl;
 
 	return 0;
 }
@@ -1837,16 +2323,18 @@ int PolygoniseCube(GRIDCELL g, double iso, TRIANGLE *tri, Mesh& mesh) {
 		Vec3 normal0, normal1, normal2;
 
 		if (vnormal == 1) {
-			normal0 = Vec3{ tri[ntri].n[0].x, tri[ntri].n[0].y, tri[ntri].n[0].z };
-			normal1 = Vec3{ tri[ntri].n[1].x, tri[ntri].n[1].y, tri[ntri].n[1].z };
-			normal2 = Vec3{ tri[ntri].n[2].x, tri[ntri].n[2].y, tri[ntri].n[2].z };
+			normal0 = Vec3 { tri[ntri].n[0].x, tri[ntri].n[0].y,
+					tri[ntri].n[0].z };
+			normal1 = Vec3 { tri[ntri].n[1].x, tri[ntri].n[1].y,
+					tri[ntri].n[1].z };
+			normal2 = Vec3 { tri[ntri].n[2].x, tri[ntri].n[2].y,
+					tri[ntri].n[2].z };
 		}
 
-		else{
+		else {
 			//	Triangle normal:
 			Vec3 V = v1 - v0;
 			Vec3 W = v2 - v0;
-
 
 			normal2.x = normal1.x = normal0.x = V.y * W.z - V.z * W.y;
 			normal2.y = normal1.y = normal0.y = V.z * W.x - V.x * W.z;
@@ -1861,15 +2349,13 @@ int PolygoniseCube(GRIDCELL g, double iso, TRIANGLE *tri, Mesh& mesh) {
 
 		}
 
-
-
 		mesh.vertexNormals.push_back(normal0);
 		mesh.vertexNormals.push_back(normal1);
 		mesh.vertexNormals.push_back(normal2);
 
 		auto last = static_cast<int>(mesh.vertices.size() - 1);
 
-		mesh.triangles.push_back( { last - 2, last - 1, last });
+		mesh.triangles.push_back( { last - 2, last - 1, last }); // @suppress("Invalid arguments")
 
 		ntri++;
 	}
