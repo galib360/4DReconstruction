@@ -51,9 +51,9 @@ class MyMesh: public vcg::tri::TriMesh<vector<MyVertex>, vector<MyFace> > {
 };
 
 Vec3f voxel_number;
-int N = 3;			//how many cameras/views
-int F = 64;		//number of frames
-int startFrame = 60;
+int N = 5;			//how many cameras/views
+int F = 353;		//number of frames
+int startFrame = 0;
 int dim[3];
 int decPoint = 1 / .01;
 static int vnormal = 0;	// 1 for per vertex normal calculation, 0 for per triangle
@@ -875,6 +875,8 @@ int main() {
 
 				if(countView == 3 || countView==4){
 					rotm = RPW * rotm;
+//					rotm = rotm.t();
+//					rotm = rotm * RPW;
 				}
 
 				rotm = rotm.t();
@@ -889,18 +891,37 @@ int main() {
 						object["camera"]["position"]["z"].asFloat();
 
 //				tvec.at<float>(1, 0) *= -1;
+//				tvec.at<float>(2, 0) *= -1;
 
-//				cout<<"tvec before: "<<tvec<<endl;
+				cameraPos.push_back(tvec);
+				Mat cameraPose;
+				tvec.copyTo(cameraPose);
 
+				cout<<"tvec before: "<<tvec.at<float>(0,0)<<" "<<tvec.at<float>(1,0)<<" "<<tvec.at<float>(2,0)<<endl;
+
+//				tvec = -rotm * tvec;
 				if (countView == 3 || countView == 4) {
-					tvec = RPW * tvec;
-					tvec = tvec + TPW;
+//					tvec = RPW * tvec;
+//					tvec = tvec + TPW;
+					Mat tvec4(4,1, CV_32F);
+					tvec4.at<float>(0,0) = tvec.at<float>(0,0);
+					tvec4.at<float>(1,0) = tvec.at<float>(1,0);
+					tvec4.at<float>(2,0) = tvec.at<float>(2,0);
+					tvec4.at<float>(3,0) = 1;
+					tvec4 = RtPW * tvec4;
+					tvec.at<float>(0,0) = tvec4.at<float>(0,0)/tvec4.at<float>(3,0);
+					tvec.at<float>(1,0) = tvec4.at<float>(1,0)/tvec4.at<float>(3,0);
+					tvec.at<float>(2,0) = tvec4.at<float>(2,0)/tvec4.at<float>(3,0);
 				}
-				tvec = -rotm * tvec;
+				cout<<"tvec after: "<<tvec.at<float>(0,0)<<" "<<tvec.at<float>(1,0)<<" "<<tvec.at<float>(2,0)<<endl;
+
+//				tvec = -rotm * tvec;
+
+				tvec = rotm * tvec;
 
 //				rotm = RPW * rotm;
 
-				cameraPos.push_back(tvec);
+
 
 //				tvec = RPW * tvec;
 //				tvec = tvec + TPW;
@@ -964,13 +985,17 @@ int main() {
 
 				Mat Rtrans = R[countView].t();
 				Mat cameraPosition = t[countView];
+//				Mat cameraPosition = cameraPose;
+//				Mat cameraPose = cameraPos[countView];
 
 				Vector3f cameraOrigin;
 				cameraOrigin.x = cameraPosition.at<float>(0, 0);
-				cameraOrigin.y = cameraPosition.at<float>(0, 1);
-				cameraOrigin.z = cameraPosition.at<float>(0, 2);
+				cameraOrigin.y = cameraPosition.at<float>(1, 0);
+				cameraOrigin.z = cameraPosition.at<float>(2, 0);
 
-				cout<<"cam0"<<to_string(countView)<<" camera origin: "<<cameraOrigin.x<<" "<<cameraOrigin.y<<" "<<cameraOrigin.z<<endl;
+				cout<<"cam0"<<to_string(countView)<<" camera extrinsic: "<<cameraOrigin.x<<" "<<cameraOrigin.y<<" "<<cameraOrigin.z<<endl;
+
+//				cout<<"cam0"<<to_string(countView)<<" camera Pose: "<<cameraPose.at<float>(0,0)<<" "<<cameraPose.at<float>(1,0)<<" "<<cameraPose.at<float>(2,0)<<endl;
 
 				Vector3f planeNormal;
 				planeNormal.x = Rtrans.at<float>(0, 2);
@@ -1149,12 +1174,16 @@ int main() {
 
 		}
 
-//		Vec2f xlim(xmin, xmax);
-//		Vec2f ylim(ymin, ymax);
-//		Vec2f zlim(zmin, zmax);
-		Vec2f xlim(1.1, 2.8);
-		Vec2f ylim(0.05, 1.9);
-		Vec2f zlim(-0.4, 0.8);
+//		Vec2f xlim(1.56, 2.34);
+//		Vec2f ylim(0.30, 1.85);
+//		Vec2f zlim(-0.20, 0.8);
+		Vec2f xlim(xmin, xmax);
+		Vec2f ylim(ymin, ymax);
+		Vec2f zlim(zmin, zmax);
+//		Vec2f ylim(-ymax, -ymin);
+//		Vec2f xlim(1.1, 2.8);
+//		Vec2f ylim(0.05, 1.9);
+//		Vec2f zlim(-0.4, 0.8);
 
 		cout << "min is: [ " << xmin << ", " << ymin << ", " << zmin << " ]"
 				<< endl;
@@ -1179,7 +1208,7 @@ int main() {
 			cout << "calculated resolution: " << resolutionx << ", "
 					<< resolutiony << ", " << resolutionz << endl;
 			cout << "resolution final: " << resolution << endl;
-			resolution = 0.01;
+//			resolution = 0.01;
 
 			voxel_size = Vec3f(resolution, resolution, resolution);
 			decPoint = 1 / resolution;
