@@ -51,19 +51,19 @@ class MyMesh: public vcg::tri::TriMesh<vector<MyVertex>, vector<MyFace> > {
 };
 
 Vec3f voxel_number;
-int N = 5;			//how many cameras/views
-int F = 353;		//number of frames
+int N = 6;			//how many cameras/views
+int F = 3;		//number of frames
 int startFrame = 0;
 int dim[3];
 int decPoint = 1 / .01;
 static int vnormal = 0;	// 1 for per vertex normal calculation, 0 for per triangle
-static int readjson = 1;
+static int readjson = 0;
 static int quatmethod = 0;//0 for doc, 1 for angle axis
 float isoscaler = 1;
 Vec3f voxel_size;
 int fps = 1000;
 int givenParam = 1; // 1 for given M, 0 for given K and Rt
-string inputdir = "Paul2";
+string inputdir = "child_rope";
 string extension = ".png";
 
 ////for bounding box computation
@@ -259,6 +259,46 @@ void Quat2Rot(Mat& rotm, Mat&quat){
 }
 
 
+Mat Rot2Quat(Mat& rotm){
+	float tr = rotm.at<float>(0, 0) + rotm.at<float>(1, 1) + rotm.at<float>(2, 2);
+	float qw,qx,qy,qz;
+	Mat quaternion(4,1, CV_32F);
+	if (tr > 0) {
+		float S = sqrt(tr + 1.0) * 2; // S=4*qw
+		qw = 0.25 * S;
+		qx = (rotm.at<float>(2, 1) - rotm.at<float>(1, 2)) / S;
+		qy = (rotm.at<float>(0, 2) - rotm.at<float>(2, 0)) / S;
+		qz = (rotm.at<float>(1, 0) - rotm.at<float>(0, 1)) / S;
+	} else if ((rotm.at<float>(0, 0) > rotm.at<float>(1, 1))
+			& (rotm.at<float>(0, 0) > rotm.at<float>(2, 2))) {
+		float S = sqrt(
+				1.0 + rotm.at<float>(0, 0) - rotm.at<float>(1, 1)
+						- rotm.at<float>(2, 2)) * 2; // S=4*qx
+		qw = (rotm.at<float>(2, 1) - rotm.at<float>(1, 2)) / S;
+		qx = 0.25 * S;
+		qy = (rotm.at<float>(0, 1) + rotm.at<float>(1, 0)) / S;
+		qz = (rotm.at<float>(0, 2) + rotm.at<float>(2, 0)) / S;
+	} else if (rotm.at<float>(1, 1) > rotm.at<float>(2, 2)) {
+		float S = sqrt(
+				1.0 + rotm.at<float>(1, 1) - rotm.at<float>(0, 0)
+						- rotm.at<float>(2, 2)) * 2; // S=4*qy
+		qw = (rotm.at<float>(0, 2) - rotm.at<float>(2, 0)) / S;
+		qx = (rotm.at<float>(0, 1) + rotm.at<float>(1, 0)) / S;
+		qy = 0.25 * S;
+		qz = (rotm.at<float>(1, 2) + rotm.at<float>(2, 1)) / S;
+	} else {
+		float S = sqrt(
+				1.0 + rotm.at<float>(2, 2) - rotm.at<float>(0, 0)
+						- rotm.at<float>(1, 1)) * 2; // S=4*qz
+		qw = (rotm.at<float>(1, 0) - rotm.at<float>(0, 1)) / S;
+		qx = (rotm.at<float>(0, 2) + rotm.at<float>(2, 0)) / S;
+		qy = (rotm.at<float>(1, 2) + rotm.at<float>(2, 1)) / S;
+		qz = 0.25 * S;
+	}
+
+	return quaternion;
+}
+
 Mat Rot2QuatMirror(Mat& rotm){
 	float tr = rotm.at<float>(0, 0) + rotm.at<float>(1, 1) + rotm.at<float>(2, 2);
 	float qw,qx,qy,qz;
@@ -332,6 +372,14 @@ int main() {
 //		vector<Vector3f> planeNormals;
 //		vector<Plane> cameraPlanes;
 //		vector<Point> midpoints;
+
+		ofstream myfileNVM;
+		string outputfilenameNVM = "output/PLY/output"
+			+ to_string(countFrame) + ".nvm";
+		myfileNVM.open(outputfilenameNVM);
+		myfileNVM<<"NVM_V3"<<endl;
+		myfileNVM<<""<<endl;
+		myfileNVM<<N<<endl;
 
 		for (int countView = 0; countView < N; countView++) {
 
@@ -444,10 +492,10 @@ int main() {
 
 			Mat drawing = Mat::zeros(threshold_output.size(), CV_8UC3);
 
-			drawContours(drawing, contours, BBindex, Scalar(255), CV_FILLED, 8,
+			drawContours(drawing, contours, BBindex, Scalar(255,255,255), CV_FILLED, 8,
 					hierarchy);
 			rectangle(drawing, boundRect[BBindex].tl(), boundRect[BBindex].br(),
-					Scalar(255, 255, 255), 2, 8, 0);
+					Scalar(0, 255, 0), 2, 8, 0);
 			Rect test = boundRect[BBindex];
 			int x = test.x;
 			int y = test.y;
@@ -470,6 +518,8 @@ int main() {
 //			namedWindow("Contours", CV_WINDOW_AUTOSIZE);
 //			imshow("Contours", drawing);
 //			waitKey(0);
+//			string contourimg = "BB"+to_string(countView)+".png";
+//			imwrite(contourimg, drawing);
 
 			silhouettes.push_back(binaryMat);
 
@@ -568,6 +618,7 @@ int main() {
 
 						t.push_back(ttemp);
 
+						Mat quaternion = Rot2Quat(rotm);
 						//Mat cameraPosition = -R[i].t() * t[i];
 						Mat Rtrans = rotm.t();
 						Mat cameraPosition = ttemp;
@@ -590,12 +641,30 @@ int main() {
 						planeNormals.push_back(planeNormal);
 						cameraPlanes.push_back(cameraPlane);
 
+						float focalLength =
+								sqrt(
+										(K[countView].at<float>(0, 0)
+												* K[countView].at<float>(0, 0))
+												+ (K[countView].at<float>(1, 1)
+														* K[countView].at<float>(
+																1, 1)));
+						float qw = quaternion.at<float>(0, 0);
+						float qx = quaternion.at<float>(1, 0);
+						float qy = quaternion.at<float>(2, 0);
+						float qz = quaternion.at<float>(3, 0);
+						myfileNVM << path + fn << " " << focalLength << " "
+								<< qw << " " << qx << " " << qy << " " << qz
+								<< " " << cameraOrigin.x << " "
+								<< cameraOrigin.y << " " << cameraOrigin.z
+								<< " " << 0 << " " << 0 << endl;
+
 						//cout<<"camera"<<countView<<": "<<M[countView]<<endl;
 
 					}
 				}
 
 				else if (givenParam == 0) {
+					Mat quaternion;
 					while (i < linedata.size()) {
 						fid.push_back(linedata[i]);
 						i++;
@@ -625,6 +694,7 @@ int main() {
 							}
 						}
 						rotm = rotm.t();
+						quaternion = Rot2Quat(rotm);
 						R.push_back(rotm);
 						int k = 3;
 						for (int j = 0; j < 3; j++) {
@@ -663,6 +733,13 @@ int main() {
 					planeNormals.push_back(planeNormal);
 					cameraPlanes.push_back(cameraPlane);
 
+					float focalLength = sqrt((K[countView].at<float>(0, 0)*K[countView].at<float>(0, 0))+ (K[countView].at<float>(1, 1)*K[countView].at<float>(1, 1)));
+					float qw = quaternion.at<float>(0,0);
+					float qx = quaternion.at<float>(1,0);
+					float qy = quaternion.at<float>(2,0);
+					float qz = quaternion.at<float>(3,0);
+					myfileNVM<<path+fn<<" "<<focalLength<<" "<<qw<<" "<<qx<<" "<<qy<<" "<<qz<<" "<<cameraOrigin.x<<" "<<cameraOrigin.y<<" "<<cameraOrigin.z<<" "<<0<<" "<<0<<endl;
+
 					//}
 				}
 			} if (readjson == 1) {
@@ -687,7 +764,7 @@ int main() {
 				RtPW.at<float>(2, 1) = object2["rotation"]["21"].asFloat();
 				RtPW.at<float>(2, 2) = object2["rotation"]["22"].asFloat();
 				RtPW.at<float>(0, 3) = object2["position"]["x"].asFloat();
-				RtPW.at<float>(1, 3) = object2["position"]["y"].asFloat();
+				RtPW.at<float>(1, 3) = object2["position"]["y"].asFloat()*-1;
 				RtPW.at<float>(2, 3) = object2["position"]["z"].asFloat();
 				RtPW.at<float>(3, 0) = 0;
 				RtPW.at<float>(3, 1) = 0;
@@ -726,7 +803,7 @@ int main() {
 				RPW.at<float>(2, 2) = RtPW.at<float>(2, 2);
 
 				TPW.at<float>(0, 0) = RtPW.at<float>(0, 3);
-				TPW.at<float>(1, 0) = RtPW.at<float>(1, 3);
+				TPW.at<float>(1, 0) = RtPW.at<float>(1, 3)*-1;
 				TPW.at<float>(2, 0) = RtPW.at<float>(2, 3);
 
 //				cout<<"RPW: "<<RPW<<endl;
@@ -758,6 +835,8 @@ int main() {
 				kk.at<float>(2, 0) = 0;
 				kk.at<float>(2, 1) = 0;
 				kk.at<float>(2, 2) = 1;
+
+				float focalLength = sqrt((kk.at<float>(0, 0)*kk.at<float>(0, 0))+ (kk.at<float>(1, 1)*kk.at<float>(1, 1)));
 
 				//push kk
 				K.push_back(kk);
@@ -873,7 +952,8 @@ int main() {
 //				Mat quat4rotm = Rot2QuatMirror(RPW);
 //				Quat2Rot(RPW, quat4rotm);
 
-				if(countView == 3 || countView==4){
+				if(countView == 3 || countView == 4){
+//				if(countView > 0){
 					rotm = RPW * rotm;
 //					rotm = rotm.t();
 //					rotm = rotm * RPW;
@@ -901,6 +981,7 @@ int main() {
 
 //				tvec = -rotm * tvec;
 				if (countView == 3 || countView == 4) {
+//				if(countView > 0){
 //					tvec = RPW * tvec;
 //					tvec = tvec + TPW;
 					Mat tvec4(4,1, CV_32F);
@@ -916,7 +997,7 @@ int main() {
 				cout<<"tvec after: "<<tvec.at<float>(0,0)<<" "<<tvec.at<float>(1,0)<<" "<<tvec.at<float>(2,0)<<endl;
 
 //				tvec = -rotm * tvec;
-
+//				tvec.at<float>(1,0) *= -1;
 				tvec = rotm * tvec;
 
 //				rotm = RPW * rotm;
@@ -1009,9 +1090,15 @@ int main() {
 				planeNormals.push_back(planeNormal);
 				cameraPlanes.push_back(cameraPlane);
 
+				/////////////////////////////For texturing
+
+				myfileNVM<<path+fn<<" "<<focalLength<<" "<<qw<<" "<<qx<<" "<<qy<<" "<<qz<<" "<<cameraOrigin.x<<" "<<cameraOrigin.y<<" "<<cameraOrigin.z<<" "<<0<<" "<<0<<endl;
+
+				/////////////////////////////////////////
 
 			}
 		}
+		myfileNVM.close();
 
 		//Read Camera Params from text file ***************************************************
 
@@ -1027,6 +1114,7 @@ int main() {
 //		float zmax = -100;
 
 		if (countFrame % fps == 0) {
+//		if (true) {
 			xmin = 1000;
 			xmax = -1000;
 			ymin = 1000;
@@ -1118,7 +1206,7 @@ int main() {
 					cout << "Angle in radian : " << angle << ", in Degree : "
 							<< angleD << endl;
 
-					if (angleD < 45) {
+					if (angleD < 30) {
 						Mat temp(4, pnts[0].pnts2d.size(), CV_32F);
 						//triangulatePoints(M[0], M[a+1], pnts[0].pnts2d, pnts[a+1].pnts2d, temp);
 						triangulatePoints(M[a], M[b], pnts[a].pnts2d,
@@ -1180,6 +1268,9 @@ int main() {
 		Vec2f xlim(xmin, xmax);
 		Vec2f ylim(ymin, ymax);
 		Vec2f zlim(zmin, zmax);
+//		Vec2f xlim(-xmax, -xmin);
+//		Vec2f ylim(-ymax, -ymin);
+//		Vec2f zlim(-zmax, -zmin);
 //		Vec2f ylim(-ymax, -ymin);
 //		Vec2f xlim(1.1, 2.8);
 //		Vec2f ylim(0.05, 1.9);
@@ -1614,7 +1705,7 @@ int main() {
 
 			//vcg::tri::UpdateNormal<MyMesh>::PerFaceNormalized(m);
 			//vcg::tri::Smooth<MyMesh>::VertexCoordPasoDoble(m,2,0,10.05);
-			vcg::tri::Smooth<MyMesh>::VertexCoordLaplacian(m, 2, false, 0);
+			vcg::tri::Smooth<MyMesh>::VertexCoordLaplacian(m, 2, false, 0); // @suppress("Invalid arguments")
 
 			//export as obj
 			vcg::tri::io::ExporterOBJ<MyMesh>::Save(m, char_array, 10);
@@ -1741,7 +1832,8 @@ void InitializeVoxels(Vec3f voxel_size, Vec2f xlim, Vec2f ylim, Vec2f zlim,
 	//float x, y, z;
 
 	//while (i < total_number) {
-	for (float z = ez; z >= sz; z -= z_step) {
+//	for (float z = ez; z >= sz; z -= z_step) {
+		for (float z = sz; z <= ez; z += z_step) {
 		if (i >= total_number)
 			break;
 		for (float x = sx; x <= ex; x += x_step) {
@@ -1766,6 +1858,7 @@ void InitializeVoxels(Vec3f voxel_size, Vec2f xlim, Vec2f ylim, Vec2f zlim,
 	for (int i = 0; i < total_number; i++) {
 		voxel.at<float>(i, 3) = 0;
 	}
+
 
 	Mat points2d;
 	int imgH = silhouettes[1].rows;
