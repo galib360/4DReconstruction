@@ -9,6 +9,7 @@
 #include <fstream>
 #include <chrono>
 #include <jsoncpp/json/json.h>
+#include <random>
 
 #include<vcg/complex/complex.h>
 #include <vcg/complex/algorithms/update/topology.h>
@@ -51,9 +52,9 @@ class MyMesh: public vcg::tri::TriMesh<vector<MyVertex>, vector<MyFace> > {
 };
 
 Vec3f voxel_number;
-int N = 6;			//how many cameras/views
-int F = 3;		//number of frames
-int startFrame = 0;
+int N = 10;			//how many cameras/views
+int F = 10;		//number of frames
+int startFrame = 4;
 int dim[3];
 int decPoint = 1 / .01;
 static int vnormal = 0;	// 1 for per vertex normal calculation, 0 for per triangle
@@ -242,6 +243,13 @@ float ymax = -1000;
 float zmin = 1000;
 float zmax = -1000;
 
+
+float meu = 4;
+float stdev = 0.5;
+std::normal_distribution<float> distribution(meu,stdev);
+std::default_random_engine generator;
+int latencyEval = 1;
+
 void Quat2Rot(Mat& rotm, Mat&quat){
 	float qw = quat.at<float>(0,0);
 	float qx = quat.at<float>(1,0);
@@ -345,9 +353,19 @@ Mat Rot2QuatMirror(Mat& rotm){
 
 int main() {
 
+	ofstream myfileLat;
+	string outputfilenameLat = "LatencyData.txt";
+	myfileLat.open(outputfilenameLat);
+	myfileLat << inputdir << endl;
+	myfileLat<<""<<endl;
+	myfileLat << "countFrame	camStart	...		camEnd	" << endl;
+	myfileLat<<""<<endl;
+
 	high_resolution_clock::time_point t1 = high_resolution_clock::now();
 
 	for (int countFrame = startFrame; countFrame < F; countFrame++) {
+		int latencyFrame;
+		myfileLat<<countFrame<<" "<<countFrame<<" ";
 		//Load data
 
 //		int total_number;	//bounding volumes's prod(dims)
@@ -396,7 +414,17 @@ int main() {
 				//path = "children/cam" + to_string(countView) + "/*.png";
 				path = inputdir + "/cam" + to_string(countView) + "/";
 			}
-			String fn = to_string(countFrame) + extension;
+			String fn;
+			if(latencyEval == 1 && countView>0 && countFrame<F-meu){
+				float deviation = distribution(generator);
+				latencyFrame = (int)(countFrame + deviation);
+				fn = to_string(latencyFrame) + extension;
+				cout<<"deviation: "<<deviation<<endl;
+				myfileLat<<latencyFrame<<" ";
+			}
+			else{
+				fn = to_string(countFrame) + extension;
+			}
 
 			//for martial
 //			cv::String path;
@@ -415,6 +443,7 @@ int main() {
 
 			//cv::Mat im = cv::imread(fn[countFrame]);
 
+			cout << path+fn << endl;
 			cv::Mat im = cv::imread(path + fn);
 //			cout << countFrame << endl;
 //			cout << path+fn << endl;
@@ -622,6 +651,7 @@ int main() {
 						//Mat cameraPosition = -R[i].t() * t[i];
 						Mat Rtrans = rotm.t();
 						Mat cameraPosition = ttemp;
+						Mat cameraPositionv2 = -rotm * ttemp;
 						//Mat Rtrans = rotm;
 
 						Vector3f cameraOrigin;
@@ -652,10 +682,16 @@ int main() {
 						float qx = quaternion.at<float>(1, 0);
 						float qy = quaternion.at<float>(2, 0);
 						float qz = quaternion.at<float>(3, 0);
+//						myfileNVM << path + fn << " " << focalLength << " "
+//								<< qw << " " << qx << " " << qy << " " << qz
+//								<< " " << cameraOrigin.x << " "
+//								<< cameraOrigin.y << " " << cameraOrigin.z
+//								<< " " << 0 << " " << 0 << endl;
+
 						myfileNVM << path + fn << " " << focalLength << " "
 								<< qw << " " << qx << " " << qy << " " << qz
-								<< " " << cameraOrigin.x << " "
-								<< cameraOrigin.y << " " << cameraOrigin.z
+								<< " " << cameraPositionv2.at<float>(0, 0) << " "
+								<< cameraPositionv2.at<float>(1, 0) << " " << cameraPositionv2.at<float>(2, 0)
 								<< " " << 0 << " " << 0 << endl;
 
 						//cout<<"camera"<<countView<<": "<<M[countView]<<endl;
@@ -713,6 +749,8 @@ int main() {
 					//for (int i = countView; i < countView+1; i++) {
 					Mat Mtemp = K[countView] * Rt[countView];
 					M.push_back(Mtemp);
+//					cout<<K[countView]<<endl;
+//					cout<<Rt[countView]<<endl;
 					Mat Rtrans = R[countView].t();
 					Mat cameraPosition = t[countView];
 
@@ -822,33 +860,53 @@ int main() {
 				Mat tvec(3, 1, cv::DataType<float>::type, Scalar(1));
 				Mat quat(4, 1, cv::DataType<float>::type, Scalar(1));
 
-				kk.at<float>(0, 0) =
-						object["camera"]["focalLength"]["x"].asFloat();
-				kk.at<float>(0, 1) = 0;
-				kk.at<float>(0, 2) =
-						object["camera"]["principalPoint"]["x"].asFloat();
-				kk.at<float>(1, 0) = 0;
-				kk.at<float>(1, 1) =
-						object["camera"]["focalLength"]["y"].asFloat();
-				kk.at<float>(1, 2) =
-						object["camera"]["principalPoint"]["y"].asFloat();
+//				kk.at<float>(0, 0) =
+//						object["camera"]["focalLength"]["x"].asFloat();
+//				kk.at<float>(0, 1) = 0;
+//				kk.at<float>(0, 2) =
+//						object["camera"]["principalPoint"]["x"].asFloat();
+//				kk.at<float>(1, 0) = 0;
+//				kk.at<float>(1, 1) =
+//						object["camera"]["focalLength"]["y"].asFloat();
+//				kk.at<float>(1, 2) =
+//						object["camera"]["principalPoint"]["y"].asFloat();
 				kk.at<float>(2, 0) = 0;
 				kk.at<float>(2, 1) = 0;
 				kk.at<float>(2, 2) = 1;
+
+				kk.at<float>(0, 0) =
+						object["focalLength"]["x"].asFloat();
+				kk.at<float>(0, 1) = 0;
+				kk.at<float>(0, 2) =
+						object["principalPoint"]["x"].asFloat();
+				kk.at<float>(1, 0) = 0;
+				kk.at<float>(1, 1) =
+						object["focalLength"]["y"].asFloat();
+				kk.at<float>(1, 2) =
+						object["principalPoint"]["y"].asFloat();
 
 				float focalLength = sqrt((kk.at<float>(0, 0)*kk.at<float>(0, 0))+ (kk.at<float>(1, 1)*kk.at<float>(1, 1)));
 
 				//push kk
 				K.push_back(kk);
 
+//				float qw = quat.at<float>(0, 0) =
+//						object["camera"]["rotation"]["w"].asFloat();
+//				float qx = quat.at<float>(0, 1) =
+//						object["camera"]["rotation"]["x"].asFloat();
+//				float qy = quat.at<float>(0, 2) =
+//						object["camera"]["rotation"]["y"].asFloat();
+//				float qz = quat.at<float>(0, 3) =
+//						object["camera"]["rotation"]["z"].asFloat();
+
 				float qw = quat.at<float>(0, 0) =
-						object["camera"]["rotation"]["w"].asFloat();
+						object["rotationOri"]["w"].asFloat();
 				float qx = quat.at<float>(0, 1) =
-						object["camera"]["rotation"]["x"].asFloat();
+						object["rotationOri"]["x"].asFloat();
 				float qy = quat.at<float>(0, 2) =
-						object["camera"]["rotation"]["y"].asFloat();
+						object["rotationOri"]["y"].asFloat();
 				float qz = quat.at<float>(0, 3) =
-						object["camera"]["rotation"]["z"].asFloat();
+						object["rotationOri"]["z"].asFloat();
 
 				//				cout<<(qw*qw)+(qx*qx)+(qy*qy)+(qz*qz)<<endl;
 
@@ -952,23 +1010,31 @@ int main() {
 //				Mat quat4rotm = Rot2QuatMirror(RPW);
 //				Quat2Rot(RPW, quat4rotm);
 
-				if(countView == 3 || countView == 4){
-//				if(countView > 0){
-					rotm = RPW * rotm;
-//					rotm = rotm.t();
-//					rotm = rotm * RPW;
-				}
+//				if(countView == 3 || countView == 4){
+////				if(countView > 0){
+//					rotm = RPW * rotm;
+////					rotm = rotm.t();
+////					rotm = rotm * RPW;
+//				}
 
 				rotm = rotm.t();
 
+//				cout<<rotm<<endl;
 
+//				tvec.at<float>(0, 0) =
+//						object["camera"]["position"]["x"].asFloat();
+//				tvec.at<float>(1, 0) =
+//						object["camera"]["position"]["y"].asFloat();
+//				tvec.at<float>(2, 0) =
+//						object["camera"]["position"]["z"].asFloat();
 
 				tvec.at<float>(0, 0) =
-						object["camera"]["position"]["x"].asFloat();
+						object["position"]["x"].asFloat();
 				tvec.at<float>(1, 0) =
-						object["camera"]["position"]["y"].asFloat();
+						object["position"]["y"].asFloat();
 				tvec.at<float>(2, 0) =
-						object["camera"]["position"]["z"].asFloat();
+						object["position"]["z"].asFloat();
+
 
 //				tvec.at<float>(1, 0) *= -1;
 //				tvec.at<float>(2, 0) *= -1;
@@ -980,20 +1046,20 @@ int main() {
 				cout<<"tvec before: "<<tvec.at<float>(0,0)<<" "<<tvec.at<float>(1,0)<<" "<<tvec.at<float>(2,0)<<endl;
 
 //				tvec = -rotm * tvec;
-				if (countView == 3 || countView == 4) {
-//				if(countView > 0){
-//					tvec = RPW * tvec;
-//					tvec = tvec + TPW;
-					Mat tvec4(4,1, CV_32F);
-					tvec4.at<float>(0,0) = tvec.at<float>(0,0);
-					tvec4.at<float>(1,0) = tvec.at<float>(1,0);
-					tvec4.at<float>(2,0) = tvec.at<float>(2,0);
-					tvec4.at<float>(3,0) = 1;
-					tvec4 = RtPW * tvec4;
-					tvec.at<float>(0,0) = tvec4.at<float>(0,0)/tvec4.at<float>(3,0);
-					tvec.at<float>(1,0) = tvec4.at<float>(1,0)/tvec4.at<float>(3,0);
-					tvec.at<float>(2,0) = tvec4.at<float>(2,0)/tvec4.at<float>(3,0);
-				}
+//				if (countView == 3 || countView == 4) {
+////				if(countView > 0){
+////					tvec = RPW * tvec;
+////					tvec = tvec + TPW;
+//					Mat tvec4(4,1, CV_32F);
+//					tvec4.at<float>(0,0) = tvec.at<float>(0,0);
+//					tvec4.at<float>(1,0) = tvec.at<float>(1,0);
+//					tvec4.at<float>(2,0) = tvec.at<float>(2,0);
+//					tvec4.at<float>(3,0) = 1;
+//					tvec4 = RtPW * tvec4;
+//					tvec.at<float>(0,0) = tvec4.at<float>(0,0)/tvec4.at<float>(3,0);
+//					tvec.at<float>(1,0) = tvec4.at<float>(1,0)/tvec4.at<float>(3,0);
+//					tvec.at<float>(2,0) = tvec4.at<float>(2,0)/tvec4.at<float>(3,0);
+//				}
 				cout<<"tvec after: "<<tvec.at<float>(0,0)<<" "<<tvec.at<float>(1,0)<<" "<<tvec.at<float>(2,0)<<endl;
 
 //				tvec = -rotm * tvec;
@@ -1097,8 +1163,11 @@ int main() {
 				/////////////////////////////////////////
 
 			}
+
 		}
+		myfileLat<<""<<endl;
 		myfileNVM.close();
+
 
 		//Read Camera Params from text file ***************************************************
 
@@ -1206,7 +1275,8 @@ int main() {
 					cout << "Angle in radian : " << angle << ", in Degree : "
 							<< angleD << endl;
 
-					if (angleD < 30) {
+//					if (angleD< 30) {
+					if (angleD > 30 && angleD< 60) {
 						Mat temp(4, pnts[0].pnts2d.size(), CV_32F);
 						//triangulatePoints(M[0], M[a+1], pnts[0].pnts2d, pnts[a+1].pnts2d, temp);
 						triangulatePoints(M[a], M[b], pnts[a].pnts2d,
@@ -1262,9 +1332,9 @@ int main() {
 
 		}
 
-//		Vec2f xlim(1.56, 2.34);
-//		Vec2f ylim(0.30, 1.85);
-//		Vec2f zlim(-0.20, 0.8);
+//		Vec2f xlim(-0.073568, 0.028855);
+//		Vec2f ylim(0.021728, 0.181892);
+//		Vec2f zlim(-0.012445, 0.062736);
 		Vec2f xlim(xmin, xmax);
 		Vec2f ylim(ymin, ymax);
 		Vec2f zlim(zmin, zmax);
@@ -1700,6 +1770,7 @@ int main() {
 			int unref = vcg::tri::Clean<MyMesh>::RemoveUnreferencedVertex(m);
 			vcg::tri::UpdateTopology<MyMesh>::VertexFace(m);
 			vcg::tri::Allocator<MyMesh>::CompactVertexVector(m);
+			vcg::tri::Clean<MyMesh>::FlipNormalOutside(m);
 			//vcg::tri::Smooth::VertexCoordLaplacian(m,3);
 			//vcg::tri::io::ExporterPLY<MyMesh>::Save(m,"out.ply");
 
@@ -1769,6 +1840,7 @@ int main() {
 		//voxels_voted.release();
 
 	}
+	myfileLat.close();
 
 	high_resolution_clock::time_point t2 = high_resolution_clock::now();
 
